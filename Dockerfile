@@ -10,11 +10,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # install python deps
-COPY requirements.txt .
+COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # copy source
-COPY . .
+COPY server/ .
 
 # expose port Railway dùng
 EXPOSE 8000

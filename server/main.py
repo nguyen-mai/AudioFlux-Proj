@@ -128,7 +128,3 @@ def download_mp3(job_id: str):
         path=file_path,
         media_type="audio/mpeg"
     )
-
-@app.get("/")
-def health():
-    return {"status": "ok"}

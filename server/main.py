@@ -5,60 +5,90 @@ import subprocess
 import uuid
 import os
 import threading
+import re
 
-app = FastAPI(title="AudioFlux Backend - Simple Prod")
+app = FastAPI(title="AudioFlux Backend - Stable Version")
 
-# Thư mục lưu mp3
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Lưu progress theo job_id
 jobs = {}
 
-# ---------
+# -------------------------
 # MODEL
-# ---------
+# -------------------------
 
 class ConvertRequest(BaseModel):
     url: str
 
 
-# ---------
-# CORE LOGIC
-# ---------
+# -------------------------
+# UTILS
+# -------------------------
 
-def run_convert(job_id: str, url: str):
-    """
-    Background job:
-    - Download video
-    - Convert to mp3
-    """
+def safe_filename(name: str):
+    return re.sub(r'[\\/*?:"<>|]', "", name)
 
-    output_template = f"{OUTPUT_DIR}/{job_id}.%(ext)s"
 
-    jobs[job_id] = {
-        "status": "running",
-        "progress": 10
-    }
+def get_video_title(url: str):
+    command = ["yt-dlp", "--get-title", url]
 
-    # command: yt-dlp -x --audio-format mp3 -o outputs/xxx.mp3 URL
-    command = [
-        "yt-dlp",
-        "-x",
-        "--audio-format", "mp3",
-        "-o", output_template,
-        url
-    ]
-
-    try:
-        result = subprocess.run(
+    result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
     )
 
-        print("STDOUT:", result.stdout)
+    if result.returncode == 0:
+        return result.stdout.strip()
+
+    print("TITLE ERROR:", result.stderr)
+    return None
+
+
+# -------------------------
+# CONVERT LOGIC
+# -------------------------
+
+def run_convert(job_id: str, url: str):
+
+    try:
+        print("Starting job:", job_id)
+
+        title = get_video_title(url)
+
+        if not title:
+            jobs[job_id]["status"] = "error"
+            jobs[job_id]["progress"] = -1
+            return
+
+        safe_title = safe_filename(title)
+
+        output_template = f"{OUTPUT_DIR}/{job_id}.%(ext)s"
+
+        jobs[job_id] = {
+            "status": "running",
+            "progress": 10,
+            "title": safe_title
+        }
+
+        command = [
+            "yt-dlp",
+            "-x",
+            "--audio-format", "mp3",
+            "-o", output_template,
+            url
+        ]
+
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        print("RETURN CODE:", result.returncode)
         print("STDERR:", result.stderr)
 
         if result.returncode == 0:
@@ -67,15 +97,16 @@ def run_convert(job_id: str, url: str):
         else:
             jobs[job_id]["status"] = "error"
             jobs[job_id]["progress"] = -1
+
     except Exception as e:
+        print("🔥 THREAD ERROR:", str(e))
         jobs[job_id]["status"] = "error"
         jobs[job_id]["progress"] = -1
-        print(f"Error in job {job_id}: {e}")
 
 
-# ---------
+# -------------------------
 # API
-# ---------
+# -------------------------
 
 @app.post("/convert")
 def convert(request: ConvertRequest):
@@ -87,19 +118,19 @@ def convert(request: ConvertRequest):
     }
 
     thread = threading.Thread(
-        target=run_convert, 
+        target=run_convert,
         args=(job_id, request.url),
         daemon=True
     )
     thread.start()
 
-    return {
-        "job_id": job_id
-    }
+    return {"job_id": job_id}
+
 
 @app.get("/progress/{job_id}")
 def get_progress(job_id: str):
     job = jobs.get(job_id)
+
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -108,6 +139,7 @@ def get_progress(job_id: str):
         "status": job["status"],
         "progress": job["progress"]
     }
+
 
 @app.get("/download/{job_id}")
 def download_mp3(job_id: str):
@@ -123,12 +155,11 @@ def download_mp3(job_id: str):
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-    
-    # 👇 lấy title từ job
-    title = job.get("title", job_id)
+
+    safe_title = job.get("title", job_id)
 
     return FileResponse(
         path=file_path,
         media_type="audio/mpeg",
-        filename=f"{title}.mp3"
+        filename=f"{safe_title}.mp3"
     )

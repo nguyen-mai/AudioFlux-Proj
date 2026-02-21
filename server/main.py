@@ -33,20 +33,23 @@ def safe_filename(name: str):
 
 
 def get_video_title(url: str):
-    command = ["yt-dlp", "--get-title", url]
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--get-title", url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
 
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
+        if result.returncode == 0:
+            return result.stdout.strip()
 
-    if result.returncode == 0:
-        return result.stdout.strip()
+        print("TITLE ERROR:", result.stderr)
+        return None
 
-    print("TITLE ERROR:", result.stderr)
-    return None
+    except Exception as e:
+        print("TITLE EXCEPTION:", str(e))
+        return None
 
 
 # =============================
@@ -57,21 +60,20 @@ def run_convert(job_id: str, url: str):
     try:
         print("Starting job:", job_id)
 
+        # ====== 1️⃣ Lấy title (không fail nếu lỗi)
         title = get_video_title(url)
-
-        if not title:
-            with lock:
-                jobs[job_id]["status"] = "error"
-                jobs[job_id]["progress"] = -1
-            return
-
-        safe_title = safe_filename(title)
+        if title:
+            safe_title = safe_filename(title)
+        else:
+            print("Title not found, fallback to job_id")
+            safe_title = job_id
 
         with lock:
             jobs[job_id]["status"] = "running"
             jobs[job_id]["progress"] = 10
             jobs[job_id]["title"] = safe_title
 
+        # ====== 2️⃣ Convert mp3
         output_template = f"{OUTPUT_DIR}/{job_id}.%(ext)s"
 
         command = [
@@ -89,17 +91,31 @@ def run_convert(job_id: str, url: str):
             text=True
         )
 
-        print("RETURN CODE:", result.returncode)
-        print("STDERR:", result.stderr)
+        print("CONVERT RETURN CODE:", result.returncode)
+        print("CONVERT STDERR:", result.stderr)
 
-        if result.returncode == 0:
-            with lock:
-                jobs[job_id]["status"] = "done"
-                jobs[job_id]["progress"] = 100
-        else:
+        if result.returncode != 0:
             with lock:
                 jobs[job_id]["status"] = "error"
                 jobs[job_id]["progress"] = -1
+            return
+
+        # ====== 3️⃣ Kiểm tra file tồn tại
+        final_path = f"{OUTPUT_DIR}/{job_id}.mp3"
+
+        if not os.path.exists(final_path):
+            print("MP3 file not found after convert")
+            with lock:
+                jobs[job_id]["status"] = "error"
+                jobs[job_id]["progress"] = -1
+            return
+
+        # ====== 4️⃣ DONE
+        with lock:
+            jobs[job_id]["status"] = "done"
+            jobs[job_id]["progress"] = 100
+
+        print("Job done:", job_id)
 
     except Exception as e:
         print("THREAD ERROR:", str(e))
